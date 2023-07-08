@@ -1,4 +1,4 @@
-## head.s 干了什么事
+# head.s 干了什么事
 
 head.s 执行前的内存布局如下所示，此时 head.s 和操作系统剩余部分的代码被移动到物理地址 0 到 0x80000 处，0x90000 处存放着 setup.s 中获取的一些设备信息，过后要用到。0x90020 开始是 setup.s 的代码和数据，里面包括之前设置的临时 idt 和 gdt，此时 cpu 中的 idtr，gdtr 寄存器指向之前的临时 idt 和 gdt。
 
@@ -173,5 +173,93 @@ gdt:	.quad 0x0000000000000000	/* NULL descriptor */
 	mov %ax,%fs
 	mov %ax,%gs
 	lss stack_start,%esp
+```
+
+后面的代码检测了 A20 是否开启，检测数学协处理器，这些历史包袱问题不重要所以没有细看，重要的是后面的 after_page_tables。
+
+```assembly
+	xorl %eax,%eax
+1:	incl %eax		# check that A20 really IS enabled
+	movl %eax,0x000000	# loop forever if it isn't
+	cmpl %eax,0x100000
+	je 1b
+
+/*
+ * NOTE! 486 should set bit 16, to check for write-protect in supervisor
+ * mode. Then it would be unnecessary with the "verify_area()"-calls.
+ * 486 users probably want to set the NE (#5) bit also, so as to use
+ * int 16 for math errors.
+ */
+	movl %cr0,%eax		# check math chip
+	andl $0x80000011,%eax	# Save PG,PE,ET
+/* "orl $0x10020,%eax" here for 486 might be good */
+	orl $2,%eax		# set MP
+	movl %eax,%cr0
+	call check_x87
+	jmp after_page_tables
+```
+
+在 after_page_tables 中，先把 main 函数参数压栈，然后是 main 的返回地址 L6，理论上 main 不应该返回，如果main 函数执行 ret 返回，会弹出并跳转到 L6 执行，这是个死循环。随后将 main 函数地址入栈，当 setup_paging 返回时，会弹出并跳转到 main 执行。
+
+这4张页表是内核专用页表，它们将映射线性地址空间的前 16MB 一一映射到 16MB 的物理空间。需要4张页表是因为页大小是 4KB，一个页表项是4字节，一张页表有 4KB / 4 = 1024 项，四张页表有4096项，能映射 4096 * 4KB = 16MB 的物理内存。
+
+```assembly
+/*
+ * I put the kernel page tables right after the page directory,
+ * using 4 of them to span 16 Mb of physical memory. People with
+ * more than 16MB will have to expand this.
+ */
+.org 0x1000
+pg0:
+
+.org 0x2000
+pg1:
+
+.org 0x3000
+pg2:
+
+.org 0x4000
+pg3:
+```
+
+```assembly
+after_page_tables:
+	pushl $0		# These are the parameters to main :-)
+	pushl $0
+	pushl $0
+	pushl $L6		# return address for main, if it decides to.
+	pushl $main
+	jmp setup_paging
+L6:
+	jmp L6			# main should never return here, but
+				# just in case, we know what happens.
+```
+
+接下来是最重要的初始化页目录和内核页表的代码。2~5 行代码将页目录和4张页表所在内存清零。这里使用带 rep 前缀的 stosl 字符串操作指令。首先将循环次数存入 ecx，将 eax, edi 置零。cld 指令作用是将 EFLAGS 寄存器的 DF 标志清零。当 DF 标志位为0时，在字符串操作指令中 esi, edi 变址寄存器是自增方向，否则是自减方向。stosl 指令单独使用的话是将 eax  的值存入 es:edi 指向的内存地址中，当结合 rep 前缀使用时，重复次数由 ecx 的值指定。(比较奇怪的是我在 Intel 手册中没有找到 stosl 指令，只有 stos, stosb, stosw, stosd, stosq)。这里重复次数之所以是 1024 * 5 是因为一个页表项/页目录项是4字节，stosl 操作数也是4字节，而页目录/页表大小都是 4KB，包含 4KB / 4 = 1024 个页目录项/页表项，所以清零一个页目录/页表需要循环1024次，这里有一个页目录 + 4张页表，需要 1024 * 5 次循环。
+
+6~9 行设置页目录，
+
+```assembly
+setup_paging:
+	movl $1024*5,%ecx		/* 5 pages - pg_dir+4 page tables */
+	xorl %eax,%eax
+	xorl %edi,%edi			/* pg_dir is at 0x000 */
+	cld;rep;stosl
+	movl $pg0+7,pg_dir		/* set present bit/user r/w */
+	movl $pg1+7,pg_dir+4		/*  --------- " " --------- */
+	movl $pg2+7,pg_dir+8		/*  --------- " " --------- */
+	movl $pg3+7,pg_dir+12		/*  --------- " " --------- */
+	movl $pg3+4092,%edi
+	movl $0xfff007,%eax		/*  16Mb - 4096 + 7 (r/w user,p) */
+	std
+1:	stosl			/* fill pages backwards - more efficient :-) */
+	subl $0x1000,%eax
+	jge 1b
+	xorl %eax,%eax		/* pg_dir is at 0x0000 */
+	movl %eax,%cr3		/* cr3 - page directory start */
+	movl %cr0,%eax
+	orl $0x80000000,%eax
+	movl %eax,%cr0		/* set paging (PG) bit */
+	ret			/* this also flushes prefetch-queue */
 ```
 
