@@ -1,7 +1,7 @@
 # linux0.11-learning-notes
 ### linux0.11 源码学习笔记
 
-[head.s 干了什么事](https://github.com/JustDoIt0910/linux0.11-learning-notes/blob/main/head.s%20%E5%B9%B2%E4%BA%86%E4%BB%80%E4%B9%88%E4%BA%8B.md)
+[head.s: 重新设置 idt和gdt，初始化页目录和内核页表](https://github.com/JustDoIt0910/linux0.11-learning-notes/blob/main/head.s%20%E5%B9%B2%E4%BA%86%E4%BB%80%E4%B9%88%E4%BA%8B.md)
 
 参考资料 
 - 赵炯博士《linux内核完全注释：基于0.11内核(修正版v3.0)》
